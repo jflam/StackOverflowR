@@ -1,0 +1,122 @@
+---
+title: "Analysis of R Packages on Stack Overflow Over Time"
+output: html_document
+---
+
+### Read the data and process it
+
+Note that this will take a few minutes to run as the datasets are rather large.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r, echo=FALSE}
+library(tidyverse)
+library(stringr)
+library(scales)
+library(dplyr)
+library(knitr)
+
+# Load pre-computed dataframe
+setwd("c:/Users/jflam/src/StackOverflowR/StackOverflowR")
+r_packages <- readRDS(file = "r_packages.Rda")
+package_by_year <- readRDS(file = "package_by_year.Rda")
+```
+
+Let's take a look at the first few rows of the `r_packages` dataframe:
+
+```{r, results='asis'}
+library(magrittr)
+library(kableExtra)
+r_packages %>%
+    top_n(10) %>%
+    kable(format = "html") %>%
+    kable_styling()
+```
+
+Let's look at the most mentioned R Packages in Stack Overflow Q&A
+
+```{r}
+r_packages %>%
+    count(Package, sort = TRUE) %>%
+    head(20) %>%
+    mutate(Package = reorder(Package, n)) %>%
+    ggplot(aes(Package, n)) +
+    geom_col(fill = "#f48024") +
+    coord_flip() +
+    scale_y_continuous(labels = comma_format()) +
+    labs(x = "",
+       y = "# of mentions in Stack Overflow questions and answers",
+       title = "Most Mentioned R Packages in Stack Overflow Q&A",
+       subtitle = "In non-deleted questions and answers up to September 2017.")
+```
+
+Now, let's take those same packages, and look at the Q&A traffic over time
+
+```{r}
+package_by_year %>%
+    filter(PackageTotal >= 1200) %>%
+    mutate(Percent = n / YearTotal) %>%
+    complete(Package, Year, fill = list(Percent = 0)) %>%
+    mutate(Package = reorder(Package, - PackageTotal, mean)) %>%
+    ggplot(aes(Year, Percent, color = Package)) +
+    geom_line(show.legend = FALSE, size = 1) +
+    facet_wrap(~Package) +
+    scale_x_continuous(breaks = seq(2009, 2017, 2)) +
+    scale_y_continuous(labels = percent_format()) +
+    theme_light() +
+    labs(x = "Year",
+       y = "% of R questions where either the question or an answer uses package",
+       title = "Use of R packages in Stack Overflow Q&A over time",
+       subtitle = "For the 20 most-mentioned packages. 2017 includes only Jan-Sep.")
+```
+
+Now let's look at the Ecosystem of R packages based on correlations between different tags:
+
+```{r}
+options(repr.plot.width = 13, repr.plot.height = 8)
+
+library(dplyr)
+library(widyr)
+
+package_posts <- r_packages %>%
+  filter(PostType == "Answer") %>%
+  distinct(ParentId, Package) %>%
+  add_count(Package) %>%
+  filter(n >= 100)
+
+cors_filtered <- package_posts %>%
+  pairwise_cor(Package, ParentId, sort = TRUE) %>%
+  filter(correlation > .05)
+
+package_counts <- r_packages %>%
+  count(Package) %>%
+  filter(Package %in% cors_filtered$item1 | Package %in% cors_filtered$item2)
+
+vertices <- package_counts %>%
+  inner_join(package_growth, by = "Package")
+
+library(ggraph)
+suppressPackageStartupMessages(library(igraph))
+
+set.seed(2017)
+
+cors_filtered %>%
+  graph_from_data_frame(vertices = vertices) %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(aes(size = Y2017 * 1.05), color = "black") +
+  geom_node_point(aes(size = Y2017, color = pmin(4, Growth))) +
+  scale_size_continuous(range = c(.5, 14), labels = percent_format(),
+                        breaks = seq(.05, .2, .05)) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 4) +
+  theme_void(base_size = 16) +
+  scale_color_gradient2(low = "#0077CC", high = "#f48024", trans = "log", breaks = 2 ^ seq(-1, 2),
+                        labels = c(".5X", "Same", "2X", "4X")) +
+  labs(title = "Ecosystem of R packages",
+       subtitle = "Correlations are based on packages often used in Stack Overflow answers on the same question.",
+       size = "% of 2017 questions",
+       color = "2017/2016 Growth") +
+  expand_limits(x = -6)
+```
